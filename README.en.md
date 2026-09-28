@@ -55,7 +55,7 @@ Plugins are loaded when a task starts. Create a new task in Codex and ask it to 
 
 On first use, the plugin opens a local setup page. Choose an existing DSH Web service by pasting its full startup authentication URL, or let the plugin start a new service. The choice is saved locally. Codex then submits the task, follows the visible session, and independently verifies the result. Later tasks do not automatically open the session page. No separate MCP registration is needed.
 
-The first task may download the pinned MCP and Harness npm packages. Later tasks use the local npm cache.
+The MCP server is included with the plugin, so startup does not download it. Managed mode may still download the Harness npm package on its first run.
 
 For an existing service, the setup page verifies the full authentication URL, including `?token=...`, saves it only in the plugin's private local data file, then redirects the browser to that service to sign in. MCP tools return only the token-free address to Codex. `DSH_MCP_WEB_URL` remains available as an environment override. `stop_service` and MCP shutdown only detach from an external DSH service. If DSH restarts with a new URL, ask Codex to call `open_setup` and update it.
 
@@ -91,14 +91,15 @@ codex plugin marketplace remove deepseek-harness-for-codex
 Use this only when you need the MCP tools without the plugin's delegation instructions and Codex UI entry:
 
 ```sh
-codex mcp add deepseek-harness -- npx --yes --package=github:paraself/deepseek-harness-for-codex#paraself-v0.4.0-setup-ui.1 -- deepseek-harness-for-codex
+npm install --global 'github:paraself/deepseek-harness-for-codex#paraself-v0.4.1-bundled-mcp.1'
+codex mcp add deepseek-harness -- deepseek-harness-for-codex
 ```
 
 Start a new Codex task after registration.
 
 ## How it works
 
-The plugin launches the published MCP server through `npx`. Without a saved choice, the first `start_run` or `start_service` opens a loopback-only setup page. After the user chooses, Codex retries the call. Managed mode runs `@deepseek-ai/dsh web --port 0`; existing-service mode connects to the chosen Web service without launching another DSH process.
+The plugin launches its bundled MCP server directly. Without a saved choice, the first `start_run` or `start_service` opens a loopback-only setup page. After the user chooses, Codex retries the call. Managed mode runs `@deepseek-ai/dsh web --port 0`; existing-service mode connects to the chosen Web service without launching another DSH process.
 
 Each run is fresh and asynchronous:
 
@@ -159,11 +160,11 @@ codex plugin marketplace add /absolute/path/to/deepseek-harness-for-codex
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-The installed plugin normally starts the MCP from GitHub tag `paraself-v0.4.0-setup-ui.1`. During local MCP development, temporarily point the plugin's `.mcp.json` at the absolute `dist/bin.mjs` path.
+The installed plugin starts `plugins/deepseek-harness/dist/bin.mjs` directly without contacting GitHub at startup. For local MCP development, run `npm run build` and execute that file.
 
 ## Publishing the npm package
 
-This repository publishes the public, unscoped `deepseek-harness-for-codex` package to the official npm registry. `npm publish` automatically runs the typecheck, test, and build gate. The package includes `dist/`, both README files, the demo GIF, `LICENSE`, and the package manifest.
+This repository publishes the public, unscoped `deepseek-harness-for-codex` package to the official npm registry. `npm publish` automatically runs the typecheck, test, and build gate. The package includes `plugins/deepseek-harness/dist/`, both README files, the demo GIF, `LICENSE`, and the package manifest.
 
 Authenticate and verify the account:
 

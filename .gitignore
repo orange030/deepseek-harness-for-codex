@@ -1,4 +1,5 @@
 dist/
+!plugins/deepseek-harness/dist/
 node_modules/
 coverage/
 .DS_Store

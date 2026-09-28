@@ -1,13 +1,13 @@
 {
   "name": "deepseek-harness-for-codex",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Codex plugin for delegating work to visible local DeepSeek Harness sessions and independently reviewing the results.",
   "type": "module",
   "bin": {
-    "deepseek-harness-for-codex": "dist/bin.mjs"
+    "deepseek-harness-for-codex": "plugins/deepseek-harness/dist/bin.mjs"
   },
   "files": [
-    "dist/",
+    "plugins/deepseek-harness/dist/",
     "README.md",
     "README.en.md",
     "assets/",
@@ -35,7 +35,7 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run build",
+    "check": "npm run typecheck && npm run test && npm run build && node --test tests/check-bundle.mjs",
     "prepare": "npm run build",
     "release:check": "npm run check && npm pack --dry-run",
     "prepublishOnly": "npm run check"

@@ -85,7 +85,7 @@ export function buildHarnessWebCommand(
 
   return {
     command,
-    args: ["--yes", `--package=${harnessPackage}`, "--", "dsh", "web", "--port", "0"],
+    args: ["--yes", `--package=${harnessPackage}`, "--", "dsh", "web", "--port", "0", "--no-open"],
     cwd: input.workspace,
     env: {
       ...env,

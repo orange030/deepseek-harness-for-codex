@@ -23,6 +23,7 @@ interface ServiceRecord {
   workspace: string;
   status: ServiceStatus;
   webUrl: string | null;
+  apiUrl: string | null;
   browserOpened: boolean;
   browserError: string | null;
   startedAt: Date;
@@ -326,44 +327,20 @@ export class RunManager {
   }
 
   private async attachService(workspace: string, external: ExternalWebService): Promise<ServiceRecord> {
-    let cookie: string | null = null;
-    if (external.authenticationUrl !== null) {
-      let authentication: Response;
-      try {
-        authentication = await fetch(external.authenticationUrl, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(15_000),
-        });
-      } catch {
-        throw new Error("Could not authenticate with the existing Harness Web service.");
-      }
-      cookie = authentication.headers.get("set-cookie")?.split(";", 1)[0]?.trim() || null;
-      if (authentication.status !== 303 || cookie === null) {
-        throw new Error("The existing Harness Web authentication URL was rejected.");
-      }
-    }
-
-    const response = await fetch(external.webUrl, {
-      ...(cookie === null ? {} : { headers: { cookie } }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (response.status === 401) {
-      throw new Error("Existing Harness Web requires authentication; set DSH_MCP_WEB_URL to the full URL printed by dsh web.");
-    }
-    if (!response.ok) throw new Error(`Existing Harness Web service returned HTTP ${String(response.status)}.`);
-    await response.body?.cancel();
+    const connection = await this.connectWebService(external);
 
     const service: ServiceRecord = {
       serviceId: randomUUID(),
       workspace,
       status: "running",
-      webUrl: external.webUrl,
+      webUrl: connection.browserUrl,
+      apiUrl: external.webUrl,
       browserOpened: false,
       browserError: null,
       startedAt: new Date(),
       stoppedAt: null,
       child: null,
-      cookie,
+      cookie: connection.cookie,
       log: `Attached to existing Harness Web service at ${external.webUrl}.`,
     };
     this.services.set(service.serviceId, service);
@@ -383,6 +360,7 @@ export class RunManager {
       workspace,
       status: "starting",
       webUrl: null,
+      apiUrl: null,
       browserOpened: false,
       browserError: null,
       startedAt: new Date(),
@@ -395,16 +373,14 @@ export class RunManager {
     this.serviceByWorkspace.set(workspace, serviceId);
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    const ready = new Promise<void>((resolveReady, reject) => {
+    const ready = new Promise<string>((resolveReady, reject) => {
       const timer = setTimeout(() => reject(new Error(`Harness Web service did not become ready within ${String(this.startupTimeoutMs)}ms.`)), this.startupTimeoutMs);
       const onChunk = (chunk: string): void => {
         service.log = `${service.log}${chunk}`.slice(-MAX_LOG_CHARACTERS);
         const url = READY_PATTERN.exec(service.log)?.[1];
         if (url !== undefined && service.status === "starting") {
           clearTimeout(timer);
-          service.webUrl = url;
-          service.status = "running";
-          resolveReady();
+          resolveReady(url);
         }
       };
       child.stdout?.on("data", onChunk);
@@ -426,7 +402,14 @@ export class RunManager {
       });
     });
     try {
-      await ready;
+      const readyUrl = await ready;
+      const external = resolveExternalWebService({ DSH_MCP_WEB_URL: readyUrl });
+      if (external === undefined) throw new Error("Harness Web service did not provide a usable loopback URL.");
+      const connection = await this.connectWebService(external);
+      service.webUrl = connection.browserUrl;
+      service.apiUrl = external.webUrl;
+      service.cookie = connection.cookie;
+      service.status = "running";
       return service;
     } catch (error) {
       this.serviceByWorkspace.delete(workspace);
@@ -481,8 +464,8 @@ export class RunManager {
   }
 
   private async rpc<T>(service: ServiceRecord, method: string, args: Record<string, unknown>): Promise<T> {
-    if (service.webUrl === null) throw new Error("Harness Web service has no URL.");
-    const response = await fetch(`${service.webUrl}/api/${method}`, {
+    if (service.apiUrl === null) throw new Error("Harness Web service has no API URL.");
+    const response = await fetch(`${service.apiUrl}/api/${method}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -495,6 +478,39 @@ export class RunManager {
     const body = await response.json() as RpcEnvelope<T>;
     if (!body.result.ok) throw new Error(`${method} failed: ${body.result.error.code}: ${body.result.error.message}`);
     return body.result.value;
+  }
+
+  private async connectWebService(external: ExternalWebService): Promise<{ browserUrl: string; cookie: string | null }> {
+    let cookie: string | null = null;
+    if (external.authenticationUrl !== null) {
+      let authentication: Response;
+      try {
+        authentication = await fetch(external.authenticationUrl, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(15_000),
+        });
+      } catch {
+        throw new Error("Could not authenticate with the Harness Web service.");
+      }
+      cookie = authentication.headers.get("set-cookie")?.split(";", 1)[0]?.trim() || null;
+      if (authentication.status !== 303 || cookie === null) {
+        throw new Error("The Harness Web authentication URL was rejected.");
+      }
+    }
+
+    const response = await fetch(external.webUrl, {
+      ...(cookie === null ? {} : { headers: { cookie } }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status === 401) {
+      throw new Error("Harness Web requires authentication; use the full URL printed by dsh web.");
+    }
+    if (!response.ok) throw new Error(`Harness Web service returned HTTP ${String(response.status)}.`);
+    await response.body?.cancel();
+    return {
+      browserUrl: external.authenticationUrl ?? external.webUrl,
+      cookie,
+    };
   }
 
   private async resolveWorkspace(input: string): Promise<string> {

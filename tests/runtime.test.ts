@@ -20,6 +20,7 @@ describe("Harness Web command", () => {
       "web",
       "--port",
       "0",
+      "--no-open",
     ]);
   });
 

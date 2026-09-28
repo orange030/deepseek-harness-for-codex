@@ -58,6 +58,28 @@ describe("RunManager Web orchestration", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
+  it("authenticates a token-protected Web service started by the manager", async () => {
+    await manager.close();
+    manager = new RunManager({
+      dataDirectory: join(temporaryRoot, "authenticated-launch-data"),
+      allowedRoots: [temporaryRoot],
+      startupTimeoutMs: 2_000,
+      pollIntervalMs: 10,
+      openBrowser,
+      commandFactory: ({ workspace: cwd }): HarnessCommand => ({
+        command: process.execPath,
+        args: [fixture],
+        cwd,
+        env: { ...process.env, FAKE_DSH_AUTH_TOKEN: "launch-token" },
+      }),
+    });
+
+    const started = await manager.start({ task: "authenticated task", workspace });
+
+    expect(started.webUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?token=launch-token$/);
+    expect((await manager.wait(started.runId, 2_000)).status).toBe("succeeded");
+  });
+
   it("submits the task into the visible Web session", async () => {
     const started = await manager.start({ task: "implement feature", workspace, openBrowser: true });
     expect(started.status).toBe("running");
@@ -105,7 +127,7 @@ describe("RunManager Web orchestration", () => {
 
     try {
       const started = await attached.start({ task: "external task", workspace });
-      expect(started.webUrl).toBe(new URL(host.webUrl!).origin);
+      expect(started.webUrl).toBe(host.webUrl);
       expect(attached.listServices()[0]?.processId).toBeNull();
       expect((await attached.wait(started.runId, 2_000)).status).toBe("succeeded");
       await attached.stopService(started.serviceId);

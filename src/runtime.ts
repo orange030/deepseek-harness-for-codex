@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import spawn from "cross-spawn";
 
 export const DEFAULT_HARNESS_PACKAGE = "@deepseek-ai/dsh@0.1.5-rc.2";
 
@@ -22,6 +22,15 @@ export interface HarnessWebCommandInput {
 export interface ExternalWebService {
   webUrl: string;
   authenticationUrl: string | null;
+}
+
+/** Resolves the npx command without enabling Node's shell mode. */
+function resolveNpxCommand(env: NodeJS.ProcessEnv): string {
+  const command = env.DSH_MCP_NPX_COMMAND?.trim() || "npx";
+  if (/[\r\n]/u.test(command)) {
+    throw new Error("DSH_MCP_NPX_COMMAND must not contain line breaks.");
+  }
+  return command;
 }
 
 /** Resolves the persistent data directory used for local Web service state. */
@@ -65,10 +74,13 @@ export function buildHarnessWebCommand(
   input: HarnessWebCommandInput,
   env: NodeJS.ProcessEnv = process.env,
 ): HarnessCommand {
-  const command = env.DSH_MCP_NPX_COMMAND?.trim() || (process.platform === "win32" ? "npx.cmd" : "npx");
+  const command = resolveNpxCommand(env);
   const harnessPackage = env.DSH_MCP_HARNESS_PACKAGE?.trim() || DEFAULT_HARNESS_PACKAGE;
   if (harnessPackage.startsWith("-")) {
     throw new Error("DSH_MCP_HARNESS_PACKAGE must be an npm package specifier, not an option.");
+  }
+  if (/[\r\n]/u.test(harnessPackage)) {
+    throw new Error("DSH_MCP_HARNESS_PACKAGE must not contain line breaks.");
   }
 
   return {
@@ -90,9 +102,9 @@ export function buildHarnessWebCommand(
 /** Returns local prerequisites without making a network request. */
 export function inspectRuntime(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
   const externalWebService = resolveExternalWebService(env);
-  const command = env.DSH_MCP_NPX_COMMAND?.trim() || (process.platform === "win32" ? "npx.cmd" : "npx");
+  const command = resolveNpxCommand(env);
   const probe = externalWebService === undefined
-    ? spawnSync(command, ["--version"], { encoding: "utf8", shell: false, timeout: 5_000 })
+    ? spawn.sync(command, ["--version"], { encoding: "utf8", shell: false, timeout: 5_000 })
     : null;
   const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
 

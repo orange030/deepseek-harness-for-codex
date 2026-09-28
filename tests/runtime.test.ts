@@ -23,6 +23,33 @@ describe("Harness Web command", () => {
     ]);
   });
 
+  it("uses the cross-platform npx command by default", () => {
+    const command = buildHarnessWebCommand(
+      { workspace: "/workspace", serviceHome: "/data/service" },
+      { DSH_MCP_HARNESS_PACKAGE: "@deepseek-ai/dsh@test-version" },
+    );
+
+    expect(command.command).toBe("npx");
+  });
+
+  it.runIf(process.platform === "win32")("detects the Windows npx command shim", () => {
+    const runtime = inspectRuntime(process.env);
+
+    expect(runtime.npxAvailable).toBe(true);
+    expect(runtime.npxVersion).toMatch(/^\d+\.\d+\.\d+/u);
+  });
+
+  it("rejects line breaks in executable and package configuration", () => {
+    expect(() => buildHarnessWebCommand(
+      { workspace: "/workspace", serviceHome: "/data/service" },
+      { DSH_MCP_NPX_COMMAND: "npx\r\nwhoami" },
+    )).toThrow("DSH_MCP_NPX_COMMAND must not contain line breaks");
+    expect(() => buildHarnessWebCommand(
+      { workspace: "/workspace", serviceHome: "/data/service" },
+      { DSH_MCP_HARNESS_PACKAGE: "@deepseek-ai/dsh\nwhoami" },
+    )).toThrow("DSH_MCP_HARNESS_PACKAGE must not contain line breaks");
+  });
+
   it("uses an existing loopback Web service without requiring npx", () => {
     expect(resolveExternalWebService({ DSH_MCP_WEB_URL: "http://127.0.0.1:3080/?token=test-token" })).toEqual({
       webUrl: "http://127.0.0.1:3080",

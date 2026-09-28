@@ -35,7 +35,7 @@ Do not commit this file. You can instead provide `DEEPSEEK_API_KEY` to the envir
 Copy these two commands into a terminal:
 
 ```sh
-codex plugin marketplace add paraself/deepseek-harness-for-codex --ref main
+codex plugin marketplace add orange030/deepseek-harness-for-codex --ref main
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -43,7 +43,7 @@ On macOS, if `codex` is not found or another global installation shadows the des
 
 ```sh
 CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
-"$CODEX_APP_BIN" plugin marketplace add paraself/deepseek-harness-for-codex --ref main
+"$CODEX_APP_BIN" plugin marketplace add orange030/deepseek-harness-for-codex --ref main
 "$CODEX_APP_BIN" plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -140,7 +140,7 @@ Telemetry is disabled for Harness child processes by default. The Web service bi
 
 ## Security model
 
-`start_run` is a write-capable tool. The server requires an existing absolute workspace, resolves symlinks, uses argv instead of a shell, and can restrict allowed roots with `DSH_MCP_WORKSPACE_ROOTS`. Harness Web stays on loopback. The default permission mode is `workspace-write`; this project does not silently enable unrestricted host access.
+`start_run` is a write-capable tool. The server requires an existing absolute workspace, resolves symlinks, and passes separate argv values through a cross-platform process launcher instead of manually assembling shell commands; configuration values containing line breaks are rejected. Allowed roots can be restricted with `DSH_MCP_WORKSPACE_ROOTS`. Harness Web stays on loopback. The default permission mode is `workspace-write`; this project does not silently enable unrestricted host access.
 
 ## Session model
 

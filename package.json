@@ -16,11 +16,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Seann0824/deepseek-harness-for-codex.git"
+    "url": "git+https://github.com/orange030/deepseek-harness-for-codex.git"
   },
-  "homepage": "https://github.com/Seann0824/deepseek-harness-for-codex#readme",
+  "homepage": "https://github.com/orange030/deepseek-harness-for-codex#readme",
   "bugs": {
-    "url": "https://github.com/Seann0824/deepseek-harness-for-codex/issues"
+    "url": "https://github.com/orange030/deepseek-harness-for-codex/issues"
   },
   "publishConfig": {
     "access": "public",
@@ -50,9 +50,11 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "cross-spawn": "7.0.6",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
     "@types/node": "22.20.0",
     "tsdown": "0.22.14",
     "typescript": "6.0.3",

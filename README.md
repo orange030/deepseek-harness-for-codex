@@ -35,7 +35,7 @@ DEEPSEEK_API_KEY=your-key
 在终端中执行以下两条命令：
 
 ```sh
-codex plugin marketplace add paraself/deepseek-harness-for-codex --ref main
+codex plugin marketplace add orange030/deepseek-harness-for-codex --ref main
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -43,7 +43,7 @@ codex plugin add deepseek-harness@deepseek-harness-for-codex
 
 ```sh
 CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
-"$CODEX_APP_BIN" plugin marketplace add paraself/deepseek-harness-for-codex --ref main
+"$CODEX_APP_BIN" plugin marketplace add orange030/deepseek-harness-for-codex --ref main
 "$CODEX_APP_BIN" plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
@@ -140,7 +140,7 @@ Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动�
 
 ## 安全模型
 
-`start_run` 是可写工具。服务端要求工作区必须是已存在的绝对路径，会解析符号链接，使用 argv 而不是 shell 启动进程，并可通过 `DSH_MCP_WORKSPACE_ROOTS` 限制允许访问的根目录。Harness Web 仅监听回环地址。默认权限模式是 `workspace-write`，本项目不会静默启用不受限制的主机访问权限。
+`start_run` 是可写工具。服务端要求工作区必须是已存在的绝对路径，会解析符号链接，并通过跨平台进程启动器传递独立 argv，而不是手工拼接 shell 命令；配置值中的换行符也会被拒绝。可通过 `DSH_MCP_WORKSPACE_ROOTS` 限制允许访问的根目录。Harness Web 仅监听回环地址。默认权限模式是 `workspace-write`，本项目不会静默启用不受限制的主机访问权限。
 
 ## 会话模型
 

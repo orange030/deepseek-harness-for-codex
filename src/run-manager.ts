@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpath, mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import {
   buildHarnessWebCommand,
   resolveAllowedRoots,
@@ -77,7 +78,7 @@ export interface RunManagerOptions {
 }
 
 function defaultSpawnProcess(command: HarnessCommand): ChildProcess {
-  return spawn(command.command, command.args, {
+  return crossSpawn(command.command, command.args, {
     cwd: command.cwd,
     env: command.env,
     detached: process.platform !== "win32",

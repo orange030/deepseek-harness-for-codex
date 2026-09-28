@@ -51,13 +51,13 @@ CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 
 Plugins are loaded when a task starts. Create a new task in Codex and ask it to use DeepSeek Harness, for example:
 
-> Use DeepSeek Harness to implement this change in a visible local session. Do not open my browser automatically; give me the live Harness page link, then review the diff and run the relevant checks yourself.
+> Use DeepSeek Harness to implement this change in a visible local session. Open the setup page on first use; give me the live Harness session link, then review the diff and run the relevant checks yourself.
 
-Codex will start Harness locally, serve its Web page on a free loopback port, return a clickable link, submit the task, follow the visible session, and independently verify the result. The browser does not open automatically; click the link in Codex when you want to watch. You do not need to run Harness or register a separate MCP server.
+On first use, the plugin opens a local setup page. Choose an existing DSH Web service by pasting its full startup authentication URL, or let the plugin start a new service. The choice is saved locally. Codex then submits the task, follows the visible session, and independently verifies the result. Later tasks do not automatically open the session page. No separate MCP registration is needed.
 
 The first task may download the pinned MCP and Harness npm packages. Later tasks use the local npm cache.
 
-This fork can connect to an existing Harness Web service through `DSH_MCP_WEB_URL` without starting another DSH process. Configure the full authentication URL printed at DSH startup, including `?token=...`, only in the local environment; never commit it. The MCP exchanges it for a session cookie and only returns the token-free address to Codex. `stop_service` and MCP shutdown only detach; they never stop the external DSH service.
+For an existing service, the setup page verifies the full authentication URL, including `?token=...`, saves it only in the plugin's private local data file, then redirects the browser to that service to sign in. MCP tools return only the token-free address to Codex. `DSH_MCP_WEB_URL` remains available as an environment override. `stop_service` and MCP shutdown only detach from an external DSH service. If DSH restarts with a new URL, ask Codex to call `open_setup` and update it.
 
 ## Migrating from the old name
 
@@ -98,11 +98,11 @@ Start a new Codex task after registration.
 
 ## How it works
 
-The plugin launches the published MCP server through `npx`. On the first task for a workspace, the MCP server starts `@deepseek-ai/dsh web --port 0` on loopback without opening a browser. Codex creates the workspace and session through Harness's Web API and presents the URL as a clickable link, so opening it shows the same live task that Codex controls. Later tasks reuse that local service. The task does not run on a hosted bridge.
+The plugin launches the published MCP server through `npx`. Without a saved choice, the first `start_run` or `start_service` opens a loopback-only setup page. After the user chooses, Codex retries the call. Managed mode runs `@deepseek-ai/dsh web --port 0`; existing-service mode connects to the chosen Web service without launching another DSH process.
 
 Each run is fresh and asynchronous:
 
-1. Codex calls `start_run` with an absolute workspace and a complete task.
+1. Codex calls `start_run` with an absolute workspace and a complete task. If first-use setup is pending, it waits with `wait_setup` and retries the call after configuration.
 2. The MCP server starts or reuses Harness Web, submits a visible session, and returns its page URL to Codex.
 3. Codex presents a clickable link; the user opens it when needed while Codex follows the same session with `wait_run` or `get_run`.
 4. Codex inspects the resulting diff and runs its own verification.
@@ -112,6 +112,8 @@ Each run is fresh and asynchronous:
 | Tool | Purpose |
 | --- | --- |
 | `doctor` | Check Node, npx, package selection, credential visibility, data location, and workspace restrictions. |
+| `open_setup` | Open the local setup page to change the connection choice. |
+| `wait_setup` | Wait up to 30 seconds for the setup page to save a choice. |
 | `start_service` | Start or reuse Harness Web for a workspace and return its URL without opening the browser by default. |
 | `open_service` | Open a running Harness page when the user explicitly requests it. |
 | `list_services` | List local Harness Web services and URLs. |
@@ -122,7 +124,7 @@ Each run is fresh and asynchronous:
 | `list_runs` | List runs owned by the current MCP server process. |
 | `cancel_run` | Cancel the agent turn while keeping Web available. |
 
-Both `start_service` and `start_run` default `openBrowser` to `false`, and the plugin explicitly passes `false`. Codex should render the returned `webUrl` as a clickable link; it should use `open_service` only when the user explicitly asks Codex to open the page.
+The first-use setup page opens automatically. Selecting an existing service redirects the browser there to sign in; later runs do not automatically open the session page. Both `start_service` and `start_run` still default `openBrowser` to `false`. Codex should render the returned `webUrl` as a clickable link and use `open_service` only when the user asks it to open the session page.
 
 ## Configuration
 
@@ -132,11 +134,11 @@ Both `start_service` and `start_run` default `openBrowser` to `false`, and the p
 | `DSH_MCP_WORKSPACE_ROOTS` | unrestricted | Platform-delimited absolute roots that may be passed to `start_run`. |
 | `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | Exact npm package used for the local Harness process. |
 | `DSH_MCP_NPX_COMMAND` | `npx` | Alternate path to `npx`. |
-| `DSH_MCP_WEB_URL` | unset | Full loopback authentication URL printed at DSH startup; attach to that service instead of starting DSH. |
+| `DSH_MCP_WEB_URL` | unset | Optional override of the saved choice; use the full loopback authentication URL printed at DSH startup. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness permission mode. |
 | `DEEPSEEK_BASE_URL` | provider default | Optional DeepSeek-compatible API endpoint. |
 
-Telemetry is disabled for Harness child processes by default. The Web service binds to loopback and selects a free port. Session data remains in the configured data directory for local audit.
+The setup page saves the choice in `DSH_MCP_DATA_DIR/connection.json`. On Unix, a file containing a token is created with `0600` permissions and must not be committed. Telemetry is disabled for Harness child processes by default. The Web service binds to loopback and selects a free port. Session data remains in the configured data directory for local audit.
 
 ## Security model
 

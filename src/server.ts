@@ -28,7 +28,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     { name: "deepseek-harness-for-codex", version: "0.3.1" },
     {
       instructions:
-        "Start the local DeepSeek Harness Web service, return a clickable session URL, submit coding tasks into visible Web sessions, then inspect workspace changes independently. Do not open the browser unless the user explicitly requests it.",
+        "On first use, start_service or start_run opens a local setup page. Wait for the user to choose an existing or managed Harness Web service, then retry the tool. Do not open the Harness session page unless the user explicitly requests it.",
     },
   );
 
@@ -36,7 +36,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     "start_service",
     {
       title: "Start the local DeepSeek Harness Web UI",
-      description: "Start or reuse a local Harness Web service for an absolute workspace and return its URL without opening a browser by default.",
+      description: "On first use, open the local connection setup page. Once configured, start or reuse Harness Web for an absolute workspace.",
       inputSchema: {
         workspace: z.string().min(1).describe("Absolute repository path served by DeepSeek Harness."),
         openBrowser: z.boolean().default(false).describe("Open the Harness page after readiness. Keep false unless the user explicitly requested it."),
@@ -44,8 +44,35 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (input) => {
-      try { return result(await manager.startService(input)); } catch (error) { return failure(error); }
+      try {
+        const setup = await manager.ensureConnection();
+        return result(setup.status === "configured" ? await manager.startService(input) : setup);
+      } catch (error) { return failure(error); }
     },
+  );
+
+  server.registerTool(
+    "open_setup",
+    {
+      title: "Open DeepSeek Harness connection settings",
+      description: "Open the local browser page to change between an existing DSH Web service and a plugin-managed service.",
+      inputSchema: {},
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async () => {
+      try { return result(await manager.openSetup()); } catch (error) { return failure(error); }
+    },
+  );
+
+  server.registerTool(
+    "wait_setup",
+    {
+      title: "Wait for DeepSeek Harness connection setup",
+      description: "Wait up to 30 seconds for the local setup page to save a connection choice. Returns no credentials.",
+      inputSchema: { timeoutMs: z.number().int().min(0).max(30_000).default(30_000) },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => result(await manager.waitSetup(input.timeoutMs)),
   );
 
   server.registerTool(
@@ -93,14 +120,22 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async () => result(inspectRuntime()),
+    async () => {
+      const setup = await manager.connectionStatus();
+      const externalUrl = await manager.configuredExternalUrl();
+      return result({
+        ...inspectRuntime(externalUrl === undefined ? process.env : { ...process.env, DSH_MCP_WEB_URL: externalUrl }),
+        setupStatus: setup.status,
+        connectionMode: setup.mode,
+      });
+    },
   );
 
   server.registerTool(
     "start_run",
     {
       title: "Start a local DeepSeek Harness run",
-      description: "Start or reuse the Harness Web UI, then create a new session or continue a completed session selected by Codex. Returns runId, sessionId, sessionReused, and webUrl.",
+      description: "On first use, open the local connection setup page. Once configured, create or continue a visible Harness session and return its runId and webUrl.",
       inputSchema: {
         task: z.string().min(1).max(100_000).describe("Complete implementation task, constraints, and acceptance checks for DeepSeek Harness."),
         workspace: z.string().min(1).describe("Absolute path of the repository DeepSeek Harness may inspect and modify."),
@@ -111,7 +146,8 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     },
     async (input) => {
       try {
-        return result(await manager.start(input));
+        const setup = await manager.ensureConnection();
+        return result(setup.status === "configured" ? await manager.start(input) : setup);
       } catch (error) {
         return failure(error);
       }

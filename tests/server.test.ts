@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,14 +59,36 @@ describe("MCP server", () => {
       "list_runs",
       "list_services",
       "open_service",
+      "open_setup",
       "start_run",
       "start_service",
       "stop_service",
       "wait_run",
+      "wait_setup",
     ]);
   });
 
   it("starts and waits for a local run through MCP", async () => {
+    const firstUse = await client.callTool({
+      name: "start_run",
+      arguments: { task: "MCP task", workspace },
+    });
+    expect(firstUse.structuredContent).toMatchObject({ status: "pending", mode: null });
+    const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
+    expect(openBrowser).toHaveBeenCalledWith(setupUrl);
+    expect(manager.listServices()).toHaveLength(0);
+    const page = await (await fetch(setupUrl)).text();
+    expect(page).toContain("连接已有服务");
+    expect(page).toContain("由插件启动新服务");
+    const choice = await fetch(setupUrl, {
+      method: "POST",
+      headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ mode: "managed" }),
+    });
+    expect(choice.status).toBe(200);
+    expect((await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } })).structuredContent)
+      .toMatchObject({ status: "configured", mode: "managed" });
+
     const start = await client.callTool({
       name: "start_run",
       arguments: { task: "MCP task", workspace },
@@ -103,10 +125,16 @@ describe("MCP server", () => {
       status: "succeeded",
       assistantText: "completed:MCP follow-up",
     });
-    expect(openBrowser).not.toHaveBeenCalled();
+    expect(openBrowser).toHaveBeenCalledTimes(1);
   });
 
   it("returns a tool error for an invalid workspace", async () => {
+    const setup = await manager.ensureConnection();
+    await fetch(setup.setupUrl!, {
+      method: "POST",
+      headers: { origin: new URL(setup.setupUrl!).origin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ mode: "managed" }),
+    });
     const response = await client.callTool({
       name: "start_run",
       arguments: { task: "task", workspace: "." },
@@ -116,5 +144,80 @@ describe("MCP server", () => {
     expect(response.content).toEqual([
       expect.objectContaining({ type: "text", text: expect.stringContaining("absolute path") }),
     ]);
+  });
+
+  it("opens one setup page for concurrent first-use calls", async () => {
+    const [first, second] = await Promise.all([
+      client.callTool({ name: "start_service", arguments: { workspace } }),
+      client.callTool({ name: "start_service", arguments: { workspace } }),
+    ]);
+    expect((first.structuredContent as { setupUrl: string }).setupUrl)
+      .toBe((second.structuredContent as { setupUrl: string }).setupUrl);
+    expect(openBrowser).toHaveBeenCalledTimes(1);
+  });
+
+  it("connects to an existing service through the browser form and keeps its token private", async () => {
+    const host = new RunManager({
+      dataDirectory: join(temporaryRoot, "host-data"),
+      allowedRoots: [temporaryRoot],
+      startupTimeoutMs: 2_000,
+      commandFactory: ({ workspace: cwd }): HarnessCommand => ({
+        command: process.execPath,
+        args: [fixture],
+        cwd,
+        env: { ...process.env, FAKE_DSH_AUTH_TOKEN: "test-token" },
+      }),
+    });
+    try {
+      const existing = await host.startService({ workspace });
+      const firstUse = await client.callTool({ name: "start_service", arguments: { workspace } });
+      const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
+      expect(firstUse.structuredContent).toMatchObject({ status: "pending" });
+
+      const badOrigin = await fetch(setupUrl, {
+        method: "POST",
+        headers: { origin: "http://evil.invalid", "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
+      });
+      expect(badOrigin.status).toBe(403);
+
+      const remote = await fetch(setupUrl, {
+        method: "POST",
+        headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ mode: "external", url: "https://example.com/?token=not-local" }),
+      });
+      expect(remote.status).toBe(400);
+
+      const saved = await fetch(setupUrl, {
+        method: "POST",
+        redirect: "manual",
+        headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ mode: "external", url: existing.webUrl! }),
+      });
+      expect(saved.status).toBe(303);
+      expect(saved.headers.get("location")).toBe(existing.webUrl);
+      const ready = await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
+      expect(ready.structuredContent).toMatchObject({
+        status: "configured", mode: "external", externalWebUrl: new URL(existing.webUrl!).origin,
+      });
+      expect(JSON.stringify(ready)).not.toContain("test-token");
+      const doctor = await client.callTool({ name: "doctor", arguments: {} });
+      expect(JSON.stringify(doctor)).not.toContain("test-token");
+
+      const attached = await client.callTool({ name: "start_service", arguments: { workspace } });
+      expect(attached.structuredContent).toMatchObject({
+        status: "running", webUrl: new URL(existing.webUrl!).origin, processId: null,
+      });
+      expect(JSON.stringify(await client.callTool({ name: "list_services", arguments: {} }))).not.toContain("test-token");
+      expect(host.listServices()[0]?.status).toBe("running");
+      if (process.platform !== "win32") {
+        expect((await stat(join(temporaryRoot, "data", "connection.json"))).mode & 0o777).toBe(0o600);
+      }
+      const restarted = new RunManager({ dataDirectory: join(temporaryRoot, "data"), allowedRoots: [temporaryRoot] });
+      expect(await restarted.connectionStatus()).toMatchObject({ status: "configured", mode: "external" });
+      await restarted.close();
+    } finally {
+      await host.close();
+    }
   });
 });

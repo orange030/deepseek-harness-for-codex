@@ -55,7 +55,7 @@ CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 
 首次使用时，插件会自动打开本地设置页。选择连接已有 DSH Web（在页面中粘贴启动时输出的完整认证 URL），或让插件启动新服务。选择保存在插件本地，之后 Codex 会提交任务并跟踪可见会话，最后独立验收结果。后续任务不会自动打开会话页；无需另外注册 MCP 服务。
 
-首次运行可能会下载固定版本的 MCP 和 Harness npm 包，后续运行会使用本地 npm 缓存。
+MCP 随插件安装，无需在每次启动时下载。选择由插件启动新服务时，首次运行仍可能下载 Harness npm 包。
 
 连接已有服务时，设置页会验证完整认证 URL（包括 `?token=...`），仅将其写入插件本地数据目录的私有文件，然后在浏览器中跳转到该服务完成登录；MCP 工具只向 Codex 返回不含 Token 的地址。`DSH_MCP_WEB_URL` 仍可作为环境变量使用，并优先于页面设置。`stop_service` 和 MCP 退出只会断开连接，不会停止外部 DSH。若 DSH 重启并更换认证 URL，可让 Codex 调用 `open_setup` 重新配置。
 
@@ -91,14 +91,15 @@ codex plugin marketplace remove deepseek-harness-for-codex
 仅当你只需要 MCP 工具、不需要插件的委派工作流和 Codex UI 入口时使用：
 
 ```sh
-codex mcp add deepseek-harness -- npx --yes --package=github:paraself/deepseek-harness-for-codex#paraself-v0.4.0-setup-ui.1 -- deepseek-harness-for-codex
+npm install --global 'github:paraself/deepseek-harness-for-codex#paraself-v0.4.1-bundled-mcp.1'
+codex mcp add deepseek-harness -- deepseek-harness-for-codex
 ```
 
 注册完成后新建一个 Codex 任务。
 
 ## 工作原理
 
-插件通过 `npx` 启动已发布的 MCP 服务。没有既有选择时，首次调用 `start_run` 或 `start_service` 会打开仅监听回环地址的设置页；用户选择后，Codex 重试原调用。选择由插件启动时，MCP 执行 `@deepseek-ai/dsh web --port 0`；选择已有服务时，MCP 连接该服务，不启动第二个 DSH 进程。
+插件直接启动随安装包提供的 MCP 服务。没有既有选择时，首次调用 `start_run` 或 `start_service` 会打开仅监听回环地址的设置页；用户选择后，Codex 重试原调用。选择由插件启动时，MCP 执行 `@deepseek-ai/dsh web --port 0`；选择已有服务时，MCP 连接该服务，不启动第二个 DSH 进程。
 
 每次运行都是异步任务：
 
@@ -159,11 +160,11 @@ codex plugin marketplace add /absolute/path/to/deepseek-harness-for-codex
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-正常安装的插件会从 GitHub tag `paraself-v0.4.0-setup-ui.1` 启动 MCP。开发本地 MCP 时，可以临时把插件 `.mcp.json` 指向 `dist/bin.mjs` 的绝对路径。
+正常安装的插件直接启动 `plugins/deepseek-harness/dist/bin.mjs`，不在启动时访问 GitHub。开发本地 MCP 时，运行 `npm run build` 后可直接执行该文件。
 
 ## 发布 npm 包
 
-本仓库将无 scope 的公共包 `deepseek-harness-for-codex` 发布到 npm 官方 registry。`npm publish` 会自动执行类型检查、测试和构建。发布包包含 `dist/`、中英文 README、演示 GIF、`LICENSE` 和包清单。
+本仓库将无 scope 的公共包 `deepseek-harness-for-codex` 发布到 npm 官方 registry。`npm publish` 会自动执行类型检查、测试和构建。发布包包含 `plugins/deepseek-harness/dist/`、中英文 README、演示 GIF、`LICENSE` 和包清单。
 
 登录并确认 npm 账号：
 

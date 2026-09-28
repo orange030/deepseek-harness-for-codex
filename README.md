@@ -91,7 +91,7 @@ codex plugin marketplace remove deepseek-harness-for-codex
 仅当你只需要 MCP 工具、不需要插件的委派工作流和 Codex UI 入口时使用：
 
 ```sh
-codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex@0.3.1 -- deepseek-harness-for-codex
+codex mcp add deepseek-harness -- npx --yes --package=github:paraself/deepseek-harness-for-codex#paraself-v0.4.0-setup-ui.1 -- deepseek-harness-for-codex
 ```
 
 注册完成后新建一个 Codex 任务。
@@ -159,7 +159,7 @@ codex plugin marketplace add /absolute/path/to/deepseek-harness-for-codex
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-正常安装的插件会启动已发布的 `deepseek-harness-for-codex@0.3.1`。开发本地 MCP 时，可以临时把插件 `.mcp.json` 指向 `dist/bin.mjs` 的绝对路径。
+正常安装的插件会从 GitHub tag `paraself-v0.4.0-setup-ui.1` 启动 MCP。开发本地 MCP 时，可以临时把插件 `.mcp.json` 指向 `dist/bin.mjs` 的绝对路径。
 
 ## 发布 npm 包
 
@@ -178,7 +178,7 @@ npm whoami --registry=https://registry.npmjs.org/
 npm run release:check
 npm publish
 npm view deepseek-harness-for-codex version --registry=https://registry.npmjs.org/
-npx --yes --package=deepseek-harness-for-codex@0.3.1 -- deepseek-harness-for-codex
+npx --yes --package=deepseek-harness-for-codex@<published-version> -- deepseek-harness-for-codex
 ```
 
 npm 版本不能被覆盖。后续发布前，需要同步更新 `package.json`、`.mcp.json` 和 MCP 服务元数据中的版本引用，然后执行 `npm version patch`、`npm version minor` 或 `npm version major`。

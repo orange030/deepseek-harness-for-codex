@@ -4,12 +4,14 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   buildHarnessWebCommand,
+  authenticateExternalWebService,
   resolveAllowedRoots,
   resolveDataDirectory,
   resolveExternalWebService,
   type ExternalWebService,
   type HarnessCommand,
 } from "./runtime.js";
+import { ConnectionSetup, type SetupSnapshot } from "./setup.js";
 import type { RunSnapshot, RunStatus, ServiceSnapshot, ServiceStatus, StartRunInput, StartServiceInput } from "./types.js";
 
 const READY_PATTERN = /dsh web: (http:\/\/[^\s]+)/;
@@ -22,12 +24,14 @@ interface ServiceRecord {
   workspace: string;
   status: ServiceStatus;
   webUrl: string | null;
+  apiUrl: string | null;
   browserOpened: boolean;
   browserError: string | null;
   startedAt: Date;
   stoppedAt: Date | null;
   child: ChildProcess | null;
   cookie: string | null;
+  sourceUrl: string | null;
   log: string;
 }
 
@@ -141,7 +145,7 @@ export class RunManager {
   private readonly allowedRoots: string[];
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
-  private readonly externalWebService: ExternalWebService | undefined;
+  private readonly connectionSetup: ConnectionSetup;
   private readonly commandFactory: NonNullable<RunManagerOptions["commandFactory"]>;
   private readonly spawnProcess: NonNullable<RunManagerOptions["spawnProcess"]>;
   private readonly openBrowserImpl: NonNullable<RunManagerOptions["openBrowser"]>;
@@ -151,22 +155,55 @@ export class RunManager {
     this.allowedRoots = (options.allowedRoots ?? resolveAllowedRoots()).map((root) => resolve(root));
     this.startupTimeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
     this.pollIntervalMs = options.pollIntervalMs ?? 400;
-    this.externalWebService = options.externalWebUrl === undefined
-      ? resolveExternalWebService()
-      : resolveExternalWebService({ DSH_MCP_WEB_URL: options.externalWebUrl });
     this.commandFactory = options.commandFactory ?? ((input) => buildHarnessWebCommand(input));
     this.spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     this.openBrowserImpl = options.openBrowser ?? defaultOpenBrowser;
+    this.connectionSetup = new ConnectionSetup(this.dataDirectory, this.openBrowserImpl, options.externalWebUrl);
+  }
+
+  /** Opens first-use setup only when no connection choice exists. */
+  public async ensureConnection(): Promise<SetupSnapshot> {
+    return this.connectionSetup.open();
+  }
+
+  /** Reopens the local setup page to change a saved choice. */
+  public async openSetup(): Promise<SetupSnapshot> {
+    if (this.activeSessions.size > 0) throw new Error("Finish active Harness runs before changing the connection.");
+    return this.connectionSetup.open(true);
+  }
+
+  public async waitSetup(timeoutMs: number): Promise<SetupSnapshot> {
+    return this.connectionSetup.wait(timeoutMs);
+  }
+
+  public async connectionStatus(): Promise<SetupSnapshot> {
+    return this.connectionSetup.state();
+  }
+
+  public async configuredExternalUrl(): Promise<string | undefined> {
+    const choice = await this.connectionSetup.getChoice();
+    return choice?.mode === "external" ? choice.url : undefined;
   }
 
   /** Starts or reuses the Harness Web service for an absolute workspace. */
   public async startService(input: StartServiceInput): Promise<ServiceSnapshot> {
     const workspace = await this.resolveWorkspace(input.workspace);
+    const choice = await this.connectionSetup.getChoice();
+    const sourceUrl = choice?.mode === "external" ? choice.url : null;
+    const external = sourceUrl === null ? undefined : resolveExternalWebService({ DSH_MCP_WEB_URL: sourceUrl });
     let service = this.serviceForWorkspace(workspace);
+    if (service !== undefined && service.sourceUrl !== sourceUrl) {
+      const serviceId = service.serviceId;
+      if ([...this.runs.values()].some((run) => run.serviceId === serviceId && run.status === "running")) {
+        throw new Error("Finish active Harness runs before changing the connection.");
+      }
+      await this.terminate(service);
+      service = undefined;
+    }
     if (service === undefined) {
-      const pending = this.starts.get(workspace) ?? (this.externalWebService === undefined
+      const pending = this.starts.get(workspace) ?? (external === undefined
         ? this.launchService(workspace)
-        : this.attachService(workspace, this.externalWebService));
+        : this.attachService(workspace, external, sourceUrl!));
       this.starts.set(workspace, pending);
       try {
         service = await pending;
@@ -176,7 +213,7 @@ export class RunManager {
     }
     if ((input.openBrowser ?? false) && service.webUrl !== null) {
       try {
-        await this.openBrowserImpl(service.webUrl);
+        await this.openBrowserImpl(service.sourceUrl ?? service.webUrl);
         service.browserOpened = true;
         service.browserError = null;
       } catch (error) {
@@ -190,7 +227,7 @@ export class RunManager {
   public async openService(serviceId: string): Promise<ServiceSnapshot> {
     const service = this.requireService(serviceId);
     if (service.status !== "running" || service.webUrl === null) throw new Error("Harness Web service is not running.");
-    await this.openBrowserImpl(service.webUrl);
+    await this.openBrowserImpl(service.sourceUrl ?? service.webUrl);
     service.browserOpened = true;
     service.browserError = null;
     return this.serviceSnapshot(service);
@@ -319,50 +356,28 @@ export class RunManager {
 
   /** Stops all Web services before the MCP server exits. */
   public async close(): Promise<void> {
+    await this.connectionSetup.close();
     await Promise.all([...this.services.values()].map(async (service) => {
       if (service.status === "running" || service.status === "starting") await this.terminate(service);
     }));
   }
 
-  private async attachService(workspace: string, external: ExternalWebService): Promise<ServiceRecord> {
-    let cookie: string | null = null;
-    if (external.authenticationUrl !== null) {
-      let authentication: Response;
-      try {
-        authentication = await fetch(external.authenticationUrl, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(15_000),
-        });
-      } catch {
-        throw new Error("Could not authenticate with the existing Harness Web service.");
-      }
-      cookie = authentication.headers.get("set-cookie")?.split(";", 1)[0]?.trim() || null;
-      if (authentication.status !== 303 || cookie === null) {
-        throw new Error("The existing Harness Web authentication URL was rejected.");
-      }
-    }
-
-    const response = await fetch(external.webUrl, {
-      ...(cookie === null ? {} : { headers: { cookie } }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (response.status === 401) {
-      throw new Error("Existing Harness Web requires authentication; set DSH_MCP_WEB_URL to the full URL printed by dsh web.");
-    }
-    if (!response.ok) throw new Error(`Existing Harness Web service returned HTTP ${String(response.status)}.`);
-    await response.body?.cancel();
+  private async attachService(workspace: string, external: ExternalWebService, sourceUrl: string): Promise<ServiceRecord> {
+    const cookie = await authenticateExternalWebService(external);
 
     const service: ServiceRecord = {
       serviceId: randomUUID(),
       workspace,
       status: "running",
       webUrl: external.webUrl,
+      apiUrl: external.webUrl,
       browserOpened: false,
       browserError: null,
       startedAt: new Date(),
       stoppedAt: null,
       child: null,
       cookie,
+      sourceUrl,
       log: `Attached to existing Harness Web service at ${external.webUrl}.`,
     };
     this.services.set(service.serviceId, service);
@@ -382,12 +397,14 @@ export class RunManager {
       workspace,
       status: "starting",
       webUrl: null,
+      apiUrl: null,
       browserOpened: false,
       browserError: null,
       startedAt: new Date(),
       stoppedAt: null,
       child,
       cookie: null,
+      sourceUrl: null,
       log: "",
     };
     this.services.set(serviceId, service);
@@ -426,6 +443,10 @@ export class RunManager {
     });
     try {
       await ready;
+      const external = resolveExternalWebService({ DSH_MCP_WEB_URL: service.webUrl ?? "" });
+      if (external === undefined) throw new Error("Harness Web service did not provide a URL.");
+      service.cookie = await authenticateExternalWebService(external);
+      service.apiUrl = external.webUrl;
       return service;
     } catch (error) {
       this.serviceByWorkspace.delete(workspace);
@@ -480,8 +501,8 @@ export class RunManager {
   }
 
   private async rpc<T>(service: ServiceRecord, method: string, args: Record<string, unknown>): Promise<T> {
-    if (service.webUrl === null) throw new Error("Harness Web service has no URL.");
-    const response = await fetch(`${service.webUrl}/api/${method}`, {
+    if (service.apiUrl === null) throw new Error("Harness Web service has no URL.");
+    const response = await fetch(`${service.apiUrl}/api/${method}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -510,7 +531,7 @@ export class RunManager {
   private serviceForWorkspace(workspace: string): ServiceRecord | undefined {
     const id = this.serviceByWorkspace.get(workspace);
     const service = id === undefined ? undefined : this.services.get(id);
-    return service?.status === "running" ? service : undefined;
+    return service?.status === "running" && service.apiUrl !== null ? service : undefined;
   }
 
   private requireService(serviceId: string): ServiceRecord {

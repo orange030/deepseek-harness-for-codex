@@ -81,6 +81,30 @@ describe("RunManager Web orchestration", () => {
     expect(openBrowser).not.toHaveBeenCalled();
   });
 
+  it("authenticates a plugin-managed Web service before making RPC calls", async () => {
+    const authenticated = new RunManager({
+      dataDirectory: join(temporaryRoot, "managed-auth-data"),
+      allowedRoots: [temporaryRoot],
+      startupTimeoutMs: 2_000,
+      pollIntervalMs: 10,
+      openBrowser,
+      commandFactory: ({ workspace: cwd }): HarnessCommand => ({
+        command: process.execPath,
+        args: [fixture],
+        cwd,
+        env: { ...process.env, FAKE_DSH_AUTH_TOKEN: "test-token" },
+      }),
+    });
+    try {
+      const started = await authenticated.start({ task: "authenticated task", workspace });
+      expect((await authenticated.wait(started.runId, 2_000)).status).toBe("succeeded");
+      await authenticated.openService(started.serviceId);
+      expect(openBrowser).toHaveBeenCalledWith(started.webUrl);
+    } finally {
+      await authenticated.close();
+    }
+  });
+
   it("attaches to an existing Web service without owning its process", async () => {
     const authenticatedHost = new RunManager({
       dataDirectory: join(temporaryRoot, "authenticated-host-data"),

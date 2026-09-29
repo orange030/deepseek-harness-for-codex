@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { inspectRuntime } from "./runtime.js";
 import { RunManager } from "./run-manager.js";
 
 const runIdSchema = z.string().uuid().describe("Run identifier returned by start_run.");
@@ -89,11 +88,16 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     "doctor",
     {
       title: "Check local DeepSeek Harness prerequisites",
-      description: "Check Node, npx, runtime package, credentials visibility, data location, and workspace restrictions without downloading anything.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      description: "Run a quick local prerequisite check, or set deep=true with a workspace to start Harness and execute a real credential and workspace-write sandbox diagnostic turn.",
+      inputSchema: {
+        deep: z.boolean().default(false).describe("Run a real Harness diagnostic turn. This may use model credits and creates local session data."),
+        workspace: z.string().min(1).optional().describe("Absolute workspace required when deep=true."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
-    async () => result(inspectRuntime()),
+    async (input) => {
+      try { return result(await manager.doctor(input)); } catch (error) { return failure(error); }
+    },
   );
 
   server.registerTool(
@@ -106,6 +110,7 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
         workspace: z.string().min(1).describe("Absolute path of the repository DeepSeek Harness may inspect and modify."),
         sessionId: z.string().min(1).optional().describe("Completed Harness session to continue. Pass a sessionId returned by an earlier run in this workspace, or omit it to create a new session."),
         openBrowser: z.boolean().default(false).describe("Open the live Harness Web page. Keep false unless the user explicitly requested it."),
+        allowedWritePaths: z.array(z.string().min(1)).optional().describe("Optional workspace-relative file or directory prefixes to audit after the run. This reports Git-visible changes and is not an enforcement sandbox."),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },

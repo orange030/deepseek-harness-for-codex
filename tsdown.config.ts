@@ -1,12 +1,32 @@
 import { defineConfig } from "tsdown";
 
-export default defineConfig({
-  entry: ["src/bin.ts"],
-  clean: true,
+const shared = {
+  deps: {
+    alwaysBundle: [
+      /^@modelcontextprotocol\/sdk(?:\/|$)/u,
+      /^cross-spawn(?:\/|$)/u,
+      /^zod(?:\/|$)/u,
+    ],
+    onlyBundle: false as const,
+  },
   dts: false,
-  format: ["esm"],
-  minify: false,
-  outDir: "dist",
-  platform: "node",
+  format: "esm" as const,
+  minify: true,
+  platform: "node" as const,
   target: "node22",
-});
+};
+
+export default defineConfig([
+  {
+    ...shared,
+    entry: ["src/bin.ts"],
+    clean: false,
+    outDir: "dist",
+  },
+  {
+    ...shared,
+    entry: { server: "src/bin.ts" },
+    clean: false,
+    outDir: "plugins/deepseek-harness",
+  },
+]);

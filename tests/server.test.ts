@@ -117,4 +117,22 @@ describe("MCP server", () => {
       expect.objectContaining({ type: "text", text: expect.stringContaining("absolute path") }),
     ]);
   });
+
+  it("runs an explicit deep doctor sandbox diagnostic", async () => {
+    const response = await client.callTool({
+      name: "doctor",
+      arguments: { deep: true, workspace },
+    });
+
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({
+      mode: "deep",
+      ready: true,
+      runtimeReady: true,
+      credentialReady: true,
+      serviceReady: true,
+      sandboxReady: true,
+      diagnosticToolEvidence: true,
+    });
+  });
 });

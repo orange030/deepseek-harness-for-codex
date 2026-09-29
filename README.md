@@ -18,7 +18,7 @@ DeepSeek Harness for Codex 让 Codex 在本地启动 [DeepSeek Harness](https://
 
 ### 1. 准备环境
 
-- Node.js 22 或更高版本，并包含 `npx`
+- Node.js `^22.19.0` 或 `>=24.0.0`，并包含 `npx`
 - 支持插件的 Codex 客户端
 - DeepSeek API Key
 
@@ -55,9 +55,9 @@ CODEX_APP_BIN="/Applications/ChatGPT.app/Contents/Resources/codex"
 
 Codex 会在本地启动 Harness，在空闲的回环端口提供 Web 页面，返回可点击链接，提交任务并跟踪同一个可见会话，最后独立验收结果。浏览器不会自动打开；需要查看过程时，由你点击 Codex 消息中的链接。你不需要手动启动 Harness，也不需要另外注册 MCP 服务。
 
-首次运行可能会下载固定版本的 MCP 和 Harness npm 包，后续运行会使用本地 npm 缓存。
+首次运行可能会下载固定版本的 Harness npm 包；MCP 服务本身已随插件分发，后续 Harness 运行会使用本地 npm 缓存。
 
-此 fork 支持通过 `DSH_MCP_WEB_URL` 连接已经运行的 Harness Web，不会再启动一个 DSH 进程。请把 DSH 启动时打印的完整认证 URL（包括 `?token=...`）仅配置在本机环境中，不要提交到 Git。MCP 会用它换取会话 Cookie，对 Codex 只返回不含 Token 的地址。`stop_service` 和 MCP 退出只会断开连接，不会停止外部 DSH。
+此 fork 支持通过 `DSH_MCP_WEB_URL` 连接已经运行的 Harness Web，不会再启动一个 DSH 进程。请把 DSH 启动时打印的完整认证 URL（包括 `?token=...`）仅配置在本机环境中，不要提交到 Git。MCP 会用它换取会话 Cookie；为了让用户浏览器进入同一个受保护页面，返回的本地链接可能仍包含一次性 Token，应按敏感信息处理。运行记录不会把 Token URL、Cookie 或服务日志写入磁盘。`stop_service` 和 MCP 退出只会断开连接，不会停止外部 DSH。
 
 ## 从旧名称迁移
 
@@ -98,7 +98,7 @@ codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex
 
 ## 工作原理
 
-插件通过 `npx` 启动已发布的 MCP 服务。某个工作区首次运行任务时，MCP 服务会在本地回环地址执行 `@deepseek-ai/dsh web --port 0`，但不会自动打开浏览器。Codex 通过 Harness Web API 创建工作区和会话，并把对应 URL 作为可点击链接发给用户，因此用户按需打开后看到的就是 Codex 正在控制的实时任务。后续任务会复用该本地服务，不会通过托管中转服务执行。
+插件直接启动安装缓存中随包分发的 MCP 服务，不会在运行时从 GitHub `main` 分支获取代码。某个工作区首次运行任务时，MCP 服务会通过 `npx` 启动精确版本的 `@deepseek-ai/dsh web --port 0`，但不会自动打开浏览器。Codex 通过 Harness Web API 创建工作区和会话，并把对应 URL 作为可点击链接发给用户，因此用户按需打开后看到的就是 Codex 正在控制的实时任务。后续任务会复用该本地服务，不会通过托管中转服务执行。
 
 每次运行都是异步任务：
 
@@ -111,7 +111,7 @@ codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex
 
 | 工具 | 用途 |
 | --- | --- |
-| `doctor` | 检查 Node、npx、包版本、凭据可见性、数据目录和工作区限制。 |
+| `doctor` | 默认快速检查运行时和安全配置；传入 `deep: true` 与工作区后，启动真实 DSH 回合检查凭据和 Windows 临时目录读写删除。成功必须同时存在精确成功标记和匹配的成功工具调用记录。深度检查会使用模型额度并创建本地会话数据。 |
 | `start_service` | 为工作区启动或复用 Harness Web，并返回页面链接；默认不打开浏览器。 |
 | `open_service` | 在用户明确要求时打开正在运行的 Harness 页面。 |
 | `list_services` | 列出本地 Harness Web 服务及其 URL。 |
@@ -119,10 +119,10 @@ codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex
 | `start_run` | 由 Codex 选择创建新会话或继续已完成的会话，然后提交任务。 |
 | `wait_run` | 等待可见会话，单次最多 30 秒。 |
 | `get_run` | 读取 Web 会话状态和助手输出。 |
-| `list_runs` | 列出当前 MCP 服务进程创建的运行记录。 |
+| `list_runs` | 列出本地持久化运行记录；MCP 重启前仍在运行的记录会保守标记为失败并保留 `sessionId`。 |
 | `cancel_run` | 取消当前 agent turn，同时保留 Web 服务。 |
 
-`start_service` 和 `start_run` 的 `openBrowser` 默认值都是 `false`，插件也会明确传入 `false`。Codex 应把返回的 `webUrl` 渲染成可点击链接；只有用户明确要求 Codex 代为打开时，才使用 `open_service`。
+`start_service` 和 `start_run` 的 `openBrowser` 默认值都是 `false`，插件也会明确传入 `false`。Codex 应把返回的 `webUrl` 渲染成可点击链接；只有用户明确要求 Codex 代为打开时，才使用 `open_service`。等待审批时运行状态为 `needs_approval` 并返回结构化审批信息；DSH 以 blocked 原因结束时状态为 `blocked`。
 
 ## 配置
 
@@ -130,21 +130,23 @@ codex mcp add deepseek-harness -- npx --yes --package=deepseek-harness-for-codex
 | --- | --- | --- |
 | `DSH_MCP_DATA_DIR` | `~/.deep-seek-harness-mcp` | 持久化各工作区的 Harness Web 设置和会话。 |
 | `DSH_MCP_WORKSPACE_ROOTS` | 不限制 | `start_run` 允许使用的绝对根目录列表，使用当前平台的路径分隔符。 |
-| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.5-rc.2` | 启动本地 Harness 进程时使用的精确 npm 包版本。 |
+| `DSH_MCP_HARNESS_PACKAGE` | `@deepseek-ai/dsh@0.1.7-rc.2` | 启动本地 Harness 进程时使用的精确 npm 包版本。Windows 上已在 `0.1.5-rc.2`、`0.1.7-rc.2` 和 `0.2.0-rc.1` 复现部分工作区的 ACL 初始化失败；请用 deep doctor 检查具体工作区。 |
 | `DSH_MCP_NPX_COMMAND` | `npx` | 自定义 `npx` 命令路径。 |
 | `DSH_MCP_WEB_URL` | 未设置 | DSH 启动时打印的完整回环认证 URL；设置后连接已有服务，不再启动 DSH 子进程。 |
 | `DSH_PERMISSION_MODE` | `workspace-write` | DeepSeek Harness 权限模式。 |
 | `DEEPSEEK_BASE_URL` | 服务商默认值 | 可选的 DeepSeek 兼容 API 地址。 |
 
-Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动选择空闲端口。会话数据保留在配置的数据目录中，便于本地审计。
+Harness 子进程默认关闭遥测。Web 服务只绑定回环地址并自动选择空闲端口。会话数据和 `runs-v1/` 下的逐运行索引文件保留在配置的数据目录中，便于本地审计；索引只保存 run/session/workspace 映射、状态、序号和时间戳，不保存任务文本、助手输出、审批原因、Token URL、Cookie、进程句柄或服务日志。
 
 ## 安全模型
 
-`start_run` 是可写工具。服务端要求工作区必须是已存在的绝对路径，会解析符号链接，并通过跨平台进程启动器传递独立 argv，而不是手工拼接 shell 命令；配置值中的换行符也会被拒绝。可通过 `DSH_MCP_WORKSPACE_ROOTS` 限制允许访问的根目录。Harness Web 仅监听回环地址。默认权限模式是 `workspace-write`，本项目不会静默启用不受限制的主机访问权限。
+`start_run` 是可写工具。服务端要求工作区必须是已存在的绝对路径，会解析符号链接，并通过跨平台进程启动器传递独立 argv，而不是手工拼接 shell 命令；配置值中的换行符也会被拒绝。可通过 `DSH_MCP_WORKSPACE_ROOTS` 限制允许访问的根目录；未配置时 `doctor` 会给出安全警告，相对根目录会被拒绝。Harness Web 仅监听回环地址。默认权限模式是 `workspace-write`，本项目不会静默启用不受限制的主机访问权限。
+
+`start_run.allowedWritePaths` 可选接受工作区相对的文件或目录前缀。运行结束后插件会报告范围之外的 Git 可见变更；这是审计提示，不是强制沙箱，也不覆盖 ignored 文件。显式使用该选项时，工作区当前必须是 Git 仓库根目录。
 
 ## 会话模型
 
-每次调用 `start_run` 时，Codex 都可以选择会话。省略 `sessionId` 会创建新的可见 Harness 会话；传入之前已完成运行返回的 `sessionId`，会继续原有对话，并且只返回本轮新增输出。运行中的会话不能被并发复用。本地 Web 服务会持续复用，直到调用 `stop_service` 或 MCP 服务退出。
+每次调用 `start_run` 时，Codex 都可以选择会话。省略 `sessionId` 会创建新的可见 Harness 会话；传入之前已完成运行返回的 `sessionId`，会继续原有对话，并且只返回本轮新增输出。运行中的会话不能被并发复用。本地 Web 服务会持续复用，直到调用 `stop_service` 或 MCP 服务退出。每条运行映射使用独立文件原子替换，多个 MCP 进程不会互相覆盖；MCP 重启后可以继续列出已完成记录，但不会持久化任务/输出文本或失效的服务 URL。
 
 ## 本地开发
 
@@ -157,7 +159,7 @@ codex plugin marketplace add /absolute/path/to/deepseek-harness-for-codex
 codex plugin add deepseek-harness@deepseek-harness-for-codex
 ```
 
-正常安装的插件会启动已发布的 `deepseek-harness-for-codex@0.3.1`。开发本地 MCP 时，可以临时把插件 `.mcp.json` 指向 `dist/bin.mjs` 的绝对路径。
+正常安装的插件会直接启动安装缓存中的 `plugins/deepseek-harness/server.mjs`，该文件包含 MCP 运行依赖。独立 npm MCP 安装仍使用上面的精确 npm 版本。
 
 ## 发布 npm 包
 

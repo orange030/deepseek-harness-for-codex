@@ -69,6 +69,43 @@ export function resolveExternalWebService(env: NodeJS.ProcessEnv = process.env):
   return { webUrl: url.toString().replace(/\/$/, ""), authenticationUrl };
 }
 
+/** Verifies an existing Web service and returns its session cookie without exposing the token. */
+export async function authenticateExternalWebService(external: ExternalWebService): Promise<string | null> {
+  let cookie: string | null = null;
+  if (external.authenticationUrl !== null) {
+    let authentication: Response;
+    try {
+      authentication = await fetch(external.authenticationUrl, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      throw new Error("Could not authenticate with the existing Harness Web service.");
+    }
+    cookie = authentication.headers.get("set-cookie")?.split(";", 1)[0]?.trim() || null;
+    await authentication.body?.cancel();
+    if (authentication.status !== 303 || cookie === null) {
+      throw new Error("The existing Harness Web authentication URL was rejected.");
+    }
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(external.webUrl, {
+      ...(cookie === null ? {} : { headers: { cookie } }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new Error("Could not connect to the existing Harness Web service.");
+  }
+  await response.body?.cancel();
+  if (response.status === 401) {
+    throw new Error("Existing Harness Web requires the full authentication URL printed by dsh web.");
+  }
+  if (!response.ok) throw new Error(`Existing Harness Web service returned HTTP ${String(response.status)}.`);
+  return cookie;
+}
+
 /** Builds the argv and environment for the published Harness Web UI. */
 export function buildHarnessWebCommand(
   input: HarnessWebCommandInput,

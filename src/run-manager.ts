@@ -5,24 +5,30 @@ import { spawn, type ChildProcess } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import {
   buildHarnessWebCommand,
+  authenticateExternalWebService,
   resolveAllowedRoots,
   resolveDataDirectory,
   resolveExternalWebService,
   type ExternalWebService,
   type HarnessCommand,
 } from "./runtime.js";
+import { ConnectionSetup, type SetupSnapshot } from "./setup.js";
 import type { RunSnapshot, RunStatus, ServiceSnapshot, ServiceStatus, StartRunInput, StartServiceInput } from "./types.js";
 
 const READY_PATTERN = /dsh web: (http:\/\/[^\s]+)/;
 const STARTUP_TIMEOUT_MS = 120_000;
 const CANCEL_GRACE_MS = 5_000;
 const MAX_LOG_CHARACTERS = 100_000;
+const TITLE_PREFIX = "[codex] ";
+// ponytail: 最多等待两分钟；若标题模型的超时更长，再按实际配置延长。
+const TITLE_WAIT_MS = 120_000;
 
 interface ServiceRecord {
   serviceId: string;
   workspace: string;
   status: ServiceStatus;
   webUrl: string | null;
+  browserUrl: string | null;
   apiUrl: string | null;
   browserOpened: boolean;
   browserError: string | null;
@@ -30,6 +36,7 @@ interface ServiceRecord {
   stoppedAt: Date | null;
   child: ChildProcess | null;
   cookie: string | null;
+  sourceUrl: string | null;
   log: string;
 }
 
@@ -107,6 +114,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function redactServiceLog(value: string): string {
+  return value.replace(/([?&]token=)[^\s&]+/gu, "$1[redacted]");
+}
+
 function recordText(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (typeof value !== "object" || value === null) return null;
@@ -143,7 +154,7 @@ export class RunManager {
   private readonly allowedRoots: string[];
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
-  private readonly externalWebService: ExternalWebService | undefined;
+  private readonly connectionSetup: ConnectionSetup;
   private readonly commandFactory: NonNullable<RunManagerOptions["commandFactory"]>;
   private readonly spawnProcess: NonNullable<RunManagerOptions["spawnProcess"]>;
   private readonly openBrowserImpl: NonNullable<RunManagerOptions["openBrowser"]>;
@@ -153,22 +164,55 @@ export class RunManager {
     this.allowedRoots = (options.allowedRoots ?? resolveAllowedRoots()).map((root) => resolve(root));
     this.startupTimeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
     this.pollIntervalMs = options.pollIntervalMs ?? 400;
-    this.externalWebService = options.externalWebUrl === undefined
-      ? resolveExternalWebService()
-      : resolveExternalWebService({ DSH_MCP_WEB_URL: options.externalWebUrl });
     this.commandFactory = options.commandFactory ?? ((input) => buildHarnessWebCommand(input));
     this.spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     this.openBrowserImpl = options.openBrowser ?? defaultOpenBrowser;
+    this.connectionSetup = new ConnectionSetup(this.dataDirectory, this.openBrowserImpl, options.externalWebUrl);
+  }
+
+  /** Opens first-use setup only when no connection choice exists. */
+  public async ensureConnection(): Promise<SetupSnapshot> {
+    return this.connectionSetup.open();
+  }
+
+  /** Reopens the local setup page to change a saved choice. */
+  public async openSetup(): Promise<SetupSnapshot> {
+    if (this.activeSessions.size > 0) throw new Error("Finish active Harness runs before changing the connection.");
+    return this.connectionSetup.open(true);
+  }
+
+  public async waitSetup(timeoutMs: number): Promise<SetupSnapshot> {
+    return this.connectionSetup.wait(timeoutMs);
+  }
+
+  public async connectionStatus(): Promise<SetupSnapshot> {
+    return this.connectionSetup.state();
+  }
+
+  public async configuredExternalUrl(): Promise<string | undefined> {
+    const choice = await this.connectionSetup.getChoice();
+    return choice?.mode === "external" ? choice.url : undefined;
   }
 
   /** Starts or reuses the Harness Web service for an absolute workspace. */
   public async startService(input: StartServiceInput): Promise<ServiceSnapshot> {
     const workspace = await this.resolveWorkspace(input.workspace);
+    const choice = await this.connectionSetup.getChoice();
+    const sourceUrl = choice?.mode === "external" ? choice.url : null;
+    const external = sourceUrl === null ? undefined : resolveExternalWebService({ DSH_MCP_WEB_URL: sourceUrl });
     let service = this.serviceForWorkspace(workspace);
+    if (service !== undefined && service.sourceUrl !== sourceUrl) {
+      const serviceId = service.serviceId;
+      if ([...this.runs.values()].some((run) => run.serviceId === serviceId && run.status === "running")) {
+        throw new Error("Finish active Harness runs before changing the connection.");
+      }
+      await this.terminate(service);
+      service = undefined;
+    }
     if (service === undefined) {
-      const pending = this.starts.get(workspace) ?? (this.externalWebService === undefined
+      const pending = this.starts.get(workspace) ?? (external === undefined
         ? this.launchService(workspace)
-        : this.attachService(workspace, this.externalWebService));
+        : this.attachService(workspace, external, sourceUrl!));
       this.starts.set(workspace, pending);
       try {
         service = await pending;
@@ -178,7 +222,7 @@ export class RunManager {
     }
     if ((input.openBrowser ?? false) && service.webUrl !== null) {
       try {
-        await this.openBrowserImpl(service.webUrl);
+        await this.openBrowserImpl(service.browserUrl ?? service.webUrl);
         service.browserOpened = true;
         service.browserError = null;
       } catch (error) {
@@ -192,7 +236,7 @@ export class RunManager {
   public async openService(serviceId: string): Promise<ServiceSnapshot> {
     const service = this.requireService(serviceId);
     if (service.status !== "running" || service.webUrl === null) throw new Error("Harness Web service is not running.");
-    await this.openBrowserImpl(service.webUrl);
+    await this.openBrowserImpl(service.browserUrl ?? service.webUrl);
     service.browserOpened = true;
     service.browserError = null;
     return this.serviceSnapshot(service);
@@ -283,6 +327,7 @@ export class RunManager {
       error: null,
     };
     this.runs.set(run.runId, run);
+    if (!run.sessionReused) void this.prefixSessionTitle(service, sessionId);
     return this.refresh(run);
   }
 
@@ -321,26 +366,29 @@ export class RunManager {
 
   /** Stops all Web services before the MCP server exits. */
   public async close(): Promise<void> {
+    await this.connectionSetup.close();
     await Promise.all([...this.services.values()].map(async (service) => {
       if (service.status === "running" || service.status === "starting") await this.terminate(service);
     }));
   }
 
-  private async attachService(workspace: string, external: ExternalWebService): Promise<ServiceRecord> {
-    const connection = await this.connectWebService(external);
+  private async attachService(workspace: string, external: ExternalWebService, sourceUrl: string): Promise<ServiceRecord> {
+    const cookie = await authenticateExternalWebService(external);
 
     const service: ServiceRecord = {
       serviceId: randomUUID(),
       workspace,
       status: "running",
-      webUrl: connection.browserUrl,
+      webUrl: external.webUrl,
+      browserUrl: sourceUrl,
       apiUrl: external.webUrl,
       browserOpened: false,
       browserError: null,
       startedAt: new Date(),
       stoppedAt: null,
       child: null,
-      cookie: connection.cookie,
+      cookie,
+      sourceUrl,
       log: `Attached to existing Harness Web service at ${external.webUrl}.`,
     };
     this.services.set(service.serviceId, service);
@@ -360,6 +408,7 @@ export class RunManager {
       workspace,
       status: "starting",
       webUrl: null,
+      browserUrl: null,
       apiUrl: null,
       browserOpened: false,
       browserError: null,
@@ -367,17 +416,20 @@ export class RunManager {
       stoppedAt: null,
       child,
       cookie: null,
+      sourceUrl: null,
       log: "",
     };
     this.services.set(serviceId, service);
     this.serviceByWorkspace.set(workspace, serviceId);
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
+    let startupLog = "";
     const ready = new Promise<string>((resolveReady, reject) => {
       const timer = setTimeout(() => reject(new Error(`Harness Web service did not become ready within ${String(this.startupTimeoutMs)}ms.`)), this.startupTimeoutMs);
       const onChunk = (chunk: string): void => {
-        service.log = `${service.log}${chunk}`.slice(-MAX_LOG_CHARACTERS);
-        const url = READY_PATTERN.exec(service.log)?.[1];
+        startupLog = `${startupLog}${chunk}`.slice(-MAX_LOG_CHARACTERS);
+        service.log = redactServiceLog(startupLog);
+        const url = READY_PATTERN.exec(startupLog)?.[1];
         if (url !== undefined && service.status === "starting") {
           clearTimeout(timer);
           resolveReady(url);
@@ -405,10 +457,10 @@ export class RunManager {
       const readyUrl = await ready;
       const external = resolveExternalWebService({ DSH_MCP_WEB_URL: readyUrl });
       if (external === undefined) throw new Error("Harness Web service did not provide a usable loopback URL.");
-      const connection = await this.connectWebService(external);
-      service.webUrl = connection.browserUrl;
+      service.cookie = await authenticateExternalWebService(external);
+      service.webUrl = external.webUrl;
+      service.browserUrl = readyUrl;
       service.apiUrl = external.webUrl;
-      service.cookie = connection.cookie;
       service.status = "running";
       return service;
     } catch (error) {
@@ -463,6 +515,46 @@ export class RunManager {
     return this.runSnapshot(run);
   }
 
+  private async prefixSessionTitle(service: ServiceRecord, sessionId: string): Promise<void> {
+    const deadline = Date.now() + TITLE_WAIT_MS;
+    let fallback: string | undefined;
+    let providerStarted = false;
+    let turnEnded = false;
+    while (service.status === "running" && Date.now() < deadline) {
+      try {
+        const list = await this.rpc<{ items: SessionSummary[] }>(service, "session/list", { _request: {} });
+        const summary = list.items.find((item) => item.sessionId === sessionId);
+        if (summary === undefined) return;
+        const page = await this.rpc<{ records: HistoryEvent[] }>(service, "session/page", {
+          request: { address: { kind: "session", sessionId }, throughSeq: summary.projections?.asOfSeq ?? -1, maxMessages: 50 },
+        });
+        for (const { event } of page.records) {
+          if (event.type === "session/title-llm-request") providerStarted = true;
+          if (event.type === "turn/end") turnEnded = true;
+          if (event.type === "session/title" && typeof event.data === "object" && event.data !== null) {
+            const { title, source } = event.data as { title?: unknown; source?: { kind?: string } };
+            if (typeof title === "string" && source?.kind === "provider") {
+              await this.rpc(service, "session/rename", { request: { sessionId, title: `${TITLE_PREFIX}${title}` } });
+              return;
+            }
+            if (typeof title === "string" && source?.kind === "fallback") fallback = title;
+          }
+        }
+        if (fallback !== undefined && turnEnded && !providerStarted) break;
+      } catch {
+        // 标题更新失败不应中断智能体任务；下一轮会重试。
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 1_000));
+    }
+    if (fallback !== undefined && service.status === "running") {
+      try {
+        await this.rpc(service, "session/rename", { request: { sessionId, title: `${TITLE_PREFIX}${fallback}` } });
+      } catch {
+        // 重命名失败时保留 DSH 原标题。
+      }
+    }
+  }
+
   private async rpc<T>(service: ServiceRecord, method: string, args: Record<string, unknown>): Promise<T> {
     if (service.apiUrl === null) throw new Error("Harness Web service has no API URL.");
     const response = await fetch(`${service.apiUrl}/api/${method}`, {
@@ -480,39 +572,6 @@ export class RunManager {
     return body.result.value;
   }
 
-  private async connectWebService(external: ExternalWebService): Promise<{ browserUrl: string; cookie: string | null }> {
-    let cookie: string | null = null;
-    if (external.authenticationUrl !== null) {
-      let authentication: Response;
-      try {
-        authentication = await fetch(external.authenticationUrl, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(15_000),
-        });
-      } catch {
-        throw new Error("Could not authenticate with the Harness Web service.");
-      }
-      cookie = authentication.headers.get("set-cookie")?.split(";", 1)[0]?.trim() || null;
-      if (authentication.status !== 303 || cookie === null) {
-        throw new Error("The Harness Web authentication URL was rejected.");
-      }
-    }
-
-    const response = await fetch(external.webUrl, {
-      ...(cookie === null ? {} : { headers: { cookie } }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (response.status === 401) {
-      throw new Error("Harness Web requires authentication; use the full URL printed by dsh web.");
-    }
-    if (!response.ok) throw new Error(`Harness Web service returned HTTP ${String(response.status)}.`);
-    await response.body?.cancel();
-    return {
-      browserUrl: external.authenticationUrl ?? external.webUrl,
-      cookie,
-    };
-  }
-
   private async resolveWorkspace(input: string): Promise<string> {
     if (!isAbsolute(input)) throw new Error("workspace must be an absolute path.");
     const workspace = await realpath(input);
@@ -527,7 +586,7 @@ export class RunManager {
   private serviceForWorkspace(workspace: string): ServiceRecord | undefined {
     const id = this.serviceByWorkspace.get(workspace);
     const service = id === undefined ? undefined : this.services.get(id);
-    return service?.status === "running" ? service : undefined;
+    return service?.status === "running" && service.apiUrl !== null ? service : undefined;
   }
 
   private requireService(serviceId: string): ServiceRecord {

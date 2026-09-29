@@ -76,7 +76,8 @@ describe("RunManager Web orchestration", () => {
 
     const started = await manager.start({ task: "authenticated task", workspace });
 
-    expect(started.webUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?token=launch-token$/);
+    expect(started.webUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(JSON.stringify(manager.listServices())).not.toContain("launch-token");
     expect((await manager.wait(started.runId, 2_000)).status).toBe("succeeded");
   });
 
@@ -90,7 +91,37 @@ describe("RunManager Web orchestration", () => {
     const completed = await manager.wait(started.runId, 2_000);
     expect(completed.status).toBe("succeeded");
     expect(completed.assistantText).toBe("completed:implement feature");
-    expect(completed.lastEventSeq).toBe(2);
+    expect(completed.lastEventSeq).toBeGreaterThanOrEqual(3);
+  });
+
+  it("prefixes the generated title after the DSH title provider finishes", async () => {
+    const started = await manager.start({ task: "title-provider", workspace });
+    await manager.wait(started.runId, 2_000);
+
+    await vi.waitFor(async () => {
+      const response = await fetch(`${started.webUrl}/api/session/list`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "client-request", rpcId: "title-test", method: "session/list", payload: { args: { _request: {} } } }),
+      });
+      const body = await response.json() as { result: { value: { items: Array<{ sessionId: string; projections: { values: { title: string } } }> } } };
+      expect(body.result.value.items.find((item) => item.sessionId === started.sessionId)?.projections.values.title).toBe("[codex] generated title");
+    }, { timeout: 3_000 });
+  });
+
+  it("prefixes DSH's fallback title when no title provider runs", async () => {
+    const started = await manager.start({ task: "title-fallback", workspace });
+    await manager.wait(started.runId, 2_000);
+
+    await vi.waitFor(async () => {
+      const response = await fetch(`${started.webUrl}/api/session/list`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "client-request", rpcId: "fallback-test", method: "session/list", payload: { args: { _request: {} } } }),
+      });
+      const body = await response.json() as { result: { value: { items: Array<{ sessionId: string; projections: { values: { title: string } } }> } } };
+      expect(body.result.value.items.find((item) => item.sessionId === started.sessionId)?.projections.values.title).toBe("[codex] fallback title");
+    }, { timeout: 3_000 });
   });
 
   it("reuses one Web service for later tasks in the workspace", async () => {
@@ -101,6 +132,32 @@ describe("RunManager Web orchestration", () => {
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(manager.listServices()).toHaveLength(1);
     expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("authenticates a plugin-managed Web service before making RPC calls", async () => {
+    const authenticated = new RunManager({
+      dataDirectory: join(temporaryRoot, "managed-auth-data"),
+      allowedRoots: [temporaryRoot],
+      startupTimeoutMs: 2_000,
+      pollIntervalMs: 10,
+      openBrowser,
+      commandFactory: ({ workspace: cwd }): HarnessCommand => ({
+        command: process.execPath,
+        args: [fixture],
+        cwd,
+        env: { ...process.env, FAKE_DSH_AUTH_TOKEN: "test-token" },
+      }),
+    });
+    try {
+      const started = await authenticated.start({ task: "authenticated task", workspace });
+      expect(JSON.stringify(started)).not.toContain("test-token");
+      expect(JSON.stringify(authenticated.listServices())).not.toContain("test-token");
+      expect((await authenticated.wait(started.runId, 2_000)).status).toBe("succeeded");
+      await authenticated.openService(started.serviceId);
+      expect(openBrowser).toHaveBeenCalledWith(`${started.webUrl}/?token=test-token`);
+    } finally {
+      await authenticated.close();
+    }
   });
 
   it("attaches to an existing Web service without owning its process", async () => {
@@ -116,18 +173,21 @@ describe("RunManager Web orchestration", () => {
       }),
     });
     const host = await authenticatedHost.startService({ workspace });
+    const authenticationUrl = new URL(host.webUrl!);
+    authenticationUrl.searchParams.set("token", "test-token");
     const spawnProcess = vi.fn(() => { throw new Error("must not spawn"); });
     const attached = new RunManager({
       dataDirectory: join(temporaryRoot, "attached-data"),
       allowedRoots: [temporaryRoot],
-      externalWebUrl: host.webUrl!,
+      externalWebUrl: authenticationUrl.href,
       pollIntervalMs: 10,
       spawnProcess,
     });
 
     try {
       const started = await attached.start({ task: "external task", workspace });
-      expect(started.webUrl).toBe(host.webUrl);
+      expect(started.webUrl).toBe(authenticationUrl.origin);
+      expect(JSON.stringify(attached.listServices())).not.toContain("test-token");
       expect(attached.listServices()[0]?.processId).toBeNull();
       expect((await attached.wait(started.runId, 2_000)).status).toBe("succeeded");
       await attached.stopService(started.serviceId);
@@ -155,7 +215,7 @@ describe("RunManager Web orchestration", () => {
     const completed = await manager.wait(second.runId, 2_000);
     expect(completed.status).toBe("succeeded");
     expect(completed.assistantText).toBe("completed:follow-up");
-    expect(completed.lastEventSeq).toBe(5);
+    expect(completed.lastEventSeq).toBeGreaterThanOrEqual(6);
   });
 
   it("rejects reuse while the selected session is running", async () => {

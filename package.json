@@ -27,15 +27,15 @@
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": ">=22.0.0",
+    "node": "^22.19.0 || >=24.0.0",
     "npm": ">=10.0.0"
   },
   "packageManager": "npm@10.9.4",
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/normalize-bundles.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run build && node --test tests/check-bundle.mjs",
+    "check": "npm run typecheck && npm run build && npm run test && node --test tests/check-bundle.mjs",
     "prepare": "npm run build",
     "release:check": "npm run check && npm pack --dry-run",
     "prepublishOnly": "npm run check"

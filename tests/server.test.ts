@@ -214,6 +214,12 @@ describe("MCP server", () => {
       });
       expect(JSON.stringify(ready)).not.toContain("test-token");
       const doctor = await client.callTool({ name: "doctor", arguments: {} });
+      expect(doctor.structuredContent).toMatchObject({
+        npxRequired: false,
+        externalWebUrl: authenticationUrl.origin,
+        setupStatus: "configured",
+        connectionMode: "external",
+      });
       expect(JSON.stringify(doctor)).not.toContain("test-token");
 
       const attached = await client.callTool({ name: "start_service", arguments: { workspace } });
@@ -233,5 +239,23 @@ describe("MCP server", () => {
     } finally {
       await host.close();
     }
+  });
+
+  it("runs an explicit deep doctor sandbox diagnostic", async () => {
+    const response = await client.callTool({
+      name: "doctor",
+      arguments: { deep: true, workspace },
+    });
+
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({
+      mode: "deep",
+      ready: true,
+      runtimeReady: true,
+      credentialReady: true,
+      serviceReady: true,
+      sandboxReady: true,
+      diagnosticToolEvidence: true,
+    });
   });
 });

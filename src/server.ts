@@ -124,7 +124,10 @@ export function createMcpServer(manager: RunManager = new RunManager()): McpServ
     },
     async (input) => {
       try {
-        const setup = await manager.connectionStatus();
+        const setup = input.deep === true
+          ? await manager.ensureConnection()
+          : await manager.connectionStatus();
+        if (input.deep === true && setup.status !== "configured") return result(setup);
         return result({
           ...await manager.doctor(input),
           setupStatus: setup.status,

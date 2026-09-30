@@ -242,6 +242,28 @@ describe("MCP server", () => {
   });
 
   it("runs an explicit deep doctor sandbox diagnostic", async () => {
+    const quick = await client.callTool({ name: "doctor", arguments: {} });
+    expect(quick.structuredContent).toMatchObject({ setupStatus: "required", connectionMode: null });
+    expect(quick.structuredContent).toHaveProperty("runtimeReady");
+    expect(openBrowser).not.toHaveBeenCalled();
+
+    const firstUse = await client.callTool({
+      name: "doctor",
+      arguments: { deep: true, workspace },
+    });
+
+    expect(firstUse.structuredContent).toMatchObject({ status: "pending", mode: null });
+    const setupUrl = (firstUse.structuredContent as { setupUrl: string }).setupUrl;
+    expect(openBrowser).toHaveBeenCalledWith(setupUrl);
+    expect(manager.listServices()).toHaveLength(0);
+
+    await fetch(setupUrl, {
+      method: "POST",
+      headers: { origin: new URL(setupUrl).origin, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ mode: "managed" }),
+    });
+    await client.callTool({ name: "wait_setup", arguments: { timeoutMs: 2_000 } });
+
     const response = await client.callTool({
       name: "doctor",
       arguments: { deep: true, workspace },

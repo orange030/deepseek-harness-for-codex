@@ -91,7 +91,7 @@ codex plugin marketplace remove deepseek-harness-for-codex
 仅当你只需要 MCP 工具、不需要插件的委派工作流和 Codex UI 入口时使用：
 
 ```sh
-npm install --global 'github:paraself/deepseek-harness-for-codex#paraself-v0.4.1-bundled-mcp.1'
+npm install --global 'github:orange030/deepseek-harness-for-codex#v0.4.1'
 codex mcp add deepseek-harness -- deepseek-harness-for-codex
 ```
 

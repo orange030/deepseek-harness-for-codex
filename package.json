@@ -34,7 +34,7 @@
   "scripts": {
     "build": "tsdown && node scripts/normalize-bundles.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run tests",
     "check": "npm run typecheck && npm run build && npm run test && node --test tests/check-bundle.mjs",
     "prepare": "npm run build",
     "release:check": "npm run check && npm pack --dry-run",
